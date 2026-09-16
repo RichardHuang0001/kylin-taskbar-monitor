@@ -94,7 +94,7 @@ class LinuxDockIndicator(BaseIndicator):
             print("   sudo apt install gir1.2-gtk-3.0 python3-psutil -y")
             sys.exit(1)
 
-    def _setup_css(self, Gtk):
+    def _setup_css(self, Gtk, Gdk):
         css_data = b"""
         #kylin-dock-window {
             background-color: #1a1d24;
@@ -104,15 +104,15 @@ class LinuxDockIndicator(BaseIndicator):
         #kylin-dock-label {
             color: #dce4ec;
             font-family: monospace, "DejaVu Sans Mono", "Liberation Mono";
-            font-size: 11px;
+            font-size: 15px;
             font-weight: 600;
-            padding: 3px 8px;
+            padding: 4px 10px;
         }
         """
         provider = Gtk.CssProvider()
         provider.load_from_data(css_data)
         Gtk.StyleContext.add_provider_for_screen(
-            Gtk.Screen.get_default(),
+            Gdk.Screen.get_default(),
             provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
@@ -204,11 +204,14 @@ class LinuxDockIndicator(BaseIndicator):
         return True
 
     def _position_window(self, Gdk):
-        screen = Gdk.Screen.get_default()
-        monitor = screen.get_primary_monitor()
-        if not monitor:
-            monitor = screen.get_monitor_at_point(0, 0)
-        geom = monitor.get_geometry()
+        display = Gdk.Display.get_default()
+        monitor = display.get_primary_monitor() if display else None
+        if monitor:
+            geom = monitor.get_geometry()
+        else:
+            screen = Gdk.Screen.get_default()
+            p = screen.get_primary_monitor() if screen else 0
+            geom = screen.get_monitor_geometry(p if p >= 0 else 0) if screen else type("Geom", (), {"x": 0, "y": 0, "width": 1920, "height": 1080})()
         
         # Calculate preferred size
         _, natural_req = self.window.get_preferred_size()
@@ -229,7 +232,7 @@ class LinuxDockIndicator(BaseIndicator):
         self._glib = GLib
         self._is_running = True
 
-        self._setup_css(Gtk)
+        self._setup_css(Gtk, Gdk)
 
         # 1. Native Solid Dock Window (Zero composite overhead)
         self.window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
