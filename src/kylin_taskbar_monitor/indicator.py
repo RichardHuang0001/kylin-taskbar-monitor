@@ -68,11 +68,17 @@ class MockIndicator(BaseIndicator):
         self._is_running = False
         print("\n👋 已退出 Mock 预览。")
 
-class LinuxAppIndicator(BaseIndicator):
-    """Native Linux AppIndicator backend using GTK3 & libappindicator."""
+class LinuxDockIndicator(BaseIndicator):
+    """Ultra-lightweight X11 Dock window indicator for Kylin OS (UKUI).
+    Uses solid 2D RGB rendering (Zero Compositor / Zero Alpha CPU overhead)
+    specifically optimized for low-performance x86/ARM legacy chips.
+    """
     def __init__(self, config: MonitorConfig, collector: MetricsCollector):
         super().__init__(config, collector)
-        self.indicator = None
+        self.window = None
+        self.label = None
+        self._last_text = ""
+        self._drag_data = None
         self._gtk = None
         self._glib = None
 
@@ -80,19 +86,36 @@ class LinuxAppIndicator(BaseIndicator):
         try:
             import gi
             gi.require_version('Gtk', '3.0')
-            try:
-                gi.require_version('AppIndicator3', '0.1')
-                from gi.repository import AppIndicator3 as appindicator
-            except (ValueError, ImportError):
-                gi.require_version('AyatanaAppIndicator3', '0.1')
-                from gi.repository import AyatanaAppIndicator3 as appindicator
-            from gi.repository import Gtk, GLib, Gio
-            return appindicator, Gtk, GLib, Gio
+            from gi.repository import Gtk, Gdk, GLib
+            return Gtk, Gdk, GLib
         except Exception as e:
-            print(f"❌ 初始化 Linux 图形托盘失败: {e}")
-            print("💡 如果在信创/Ubuntu系统上，请确保已安装依赖:")
-            print("   sudo apt install gir1.2-appindicator3-0.1 python3-psutil -y")
+            print(f"❌ 初始化 GTK 运行环境失败: {e}")
+            print("💡 请在信创/Ubuntu系统上执行:")
+            print("   sudo apt install gir1.2-gtk-3.0 python3-psutil -y")
             sys.exit(1)
+
+    def _setup_css(self, Gtk):
+        css_data = b"""
+        #kylin-dock-window {
+            background-color: #1a1d24;
+            border: 1px solid #333948;
+            border-radius: 4px;
+        }
+        #kylin-dock-label {
+            color: #dce4ec;
+            font-family: monospace, "DejaVu Sans Mono", "Liberation Mono";
+            font-size: 11px;
+            font-weight: 600;
+            padding: 3px 8px;
+        }
+        """
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css_data)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gtk.Screen.get_default(),
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
     def _open_config(self, _widget):
         try:
@@ -105,39 +128,69 @@ class LinuxAppIndicator(BaseIndicator):
         Gtk = self._gtk
         about = Gtk.AboutDialog()
         about.set_program_name("Kylin Taskbar Monitor")
-        about.set_version("0.1.0")
+        about.set_version("0.2.0")
         about.set_copyright("Copyright © 2026 Huang Wei")
-        about.set_comments("信创国产系统极轻量任务栏性能监视器 (银河麒麟/统信UOS)")
-        about.set_website_label("Project Home")
+        about.set_comments("信创极轻量任务栏性能监视器 (银河麒麟/统信UOS 高能效极速版)")
         about.connect("response", lambda d, r: d.destroy())
         about.show_all()
 
-    def _get_safe_guide(self) -> str:
-        """Compute maximum bounding box for guide string with 125% scaling safety margin."""
-        sample_metrics = {
-            "cpu": 100,
-            "cpu_float": 100.0,
-            "mem_used_g": 99.9,
-            "mem_total_g": 99.9,
-            "mem_free_g": 99.9,
-            "mem_percent": 100,
-            "down_speed": "999.9M/s",
-            "up_speed": "999.9M/s",
-            "down_bps": 999999999.0,
-            "up_bps": 999999999.0,
-        }
-        try:
-            rendered = self.config.format.format(**sample_metrics)
-        except Exception:
-            rendered = "CPU 100% | 内存 99.9G | ↓999.9M/s | ↑999.9M/s"
-        # 12% safety margin accounts for fractional font layout at 125% DPI scale
-        margin = " " * max(3, int(len(rendered) * 0.12))
-        return f"  {rendered}{margin}  "
+    def _show_context_menu(self, event):
+        Gtk = self._gtk
+        menu = Gtk.Menu()
+
+        item_title = Gtk.MenuItem(label="信创性能监控 v0.2.0 (极低功耗)")
+        item_title.set_sensitive(False)
+        menu.append(item_title)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        item_config = Gtk.MenuItem(label="打开配置文件")
+        item_config.connect("activate", self._open_config)
+        menu.append(item_config)
+
+        item_about = Gtk.MenuItem(label="关于")
+        item_about.connect("activate", self._show_about)
+        menu.append(item_about)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        item_quit = Gtk.MenuItem(label="退出监控")
+        item_quit.connect("activate", lambda _: self.stop())
+        menu.append(item_quit)
+
+        menu.show_all()
+        menu.popup_at_pointer(event)
+
+    def _on_button_press(self, widget, event):
+        if event.button == 1:  # Left click: start drag
+            self._drag_data = (event.x_root, event.y_root, *self.window.get_position())
+        elif event.button == 3:  # Right click: popup menu
+            self._show_context_menu(event)
+
+    def _on_motion_notify(self, widget, event):
+        if self._drag_data:
+            start_x, start_y, win_x, win_y = self._drag_data
+            dx = int(event.x_root - start_x)
+            dy = int(event.y_root - start_y)
+            self.window.move(win_x + dx, win_y + dy)
+
+    def _on_button_release(self, widget, event):
+        if event.button == 1 and self._drag_data:
+            self._drag_data = None
+            new_x, new_y = self.window.get_position()
+            # Save docked position for persistence across boots
+            self.config.dock_x = new_x
+            self.config.dock_y = new_y
+            try:
+                self.config.save()
+            except Exception:
+                pass
 
     def update_label(self, label: str) -> None:
-        if self.indicator:
-            # 2 spaces on each side prevent crowding adjacent icons
-            self.indicator.set_label(f"  {label}  ", self._guide_string)
+        # Dirty check: Zero CPU cycles & zero GTK redraw if text has not changed
+        if self.label and label != self._last_text:
+            self._last_text = label
+            self.label.set_text(label)
 
     def _tick(self) -> bool:
         if not self._is_running:
@@ -150,66 +203,74 @@ class LinuxAppIndicator(BaseIndicator):
         self.update_label(label_text)
         return True
 
+    def _position_window(self, Gdk):
+        screen = Gdk.Screen.get_default()
+        monitor = screen.get_primary_monitor()
+        if not monitor:
+            monitor = screen.get_monitor_at_point(0, 0)
+        geom = monitor.get_geometry()
+        
+        # Calculate preferred size
+        _, natural_req = self.window.get_preferred_size()
+        w = max(260, natural_req.width)
+        h = max(24, natural_req.height)
+
+        if self.config.dock_x >= 0 and self.config.dock_y >= 0:
+            self.window.move(self.config.dock_x, self.config.dock_y)
+        else:
+            # Smart default: docked right above UKUI taskbar (bottom-right)
+            x = geom.x + geom.width - w - 16
+            y = geom.y + geom.height - 44 - h - 6
+            self.window.move(max(0, x), max(0, y))
+
     def start(self) -> None:
-        appindicator, Gtk, GLib, Gio = self._init_gtk()
+        Gtk, Gdk, GLib = self._init_gtk()
         self._gtk = Gtk
         self._glib = GLib
         self._is_running = True
-        self._guide_string = self._get_safe_guide()
 
-        # If show_icon is disabled, pass empty or transparent icon to save tray width
-        icon_name = self.config.icon if getattr(self.config, "show_icon", False) else ""
-        if not icon_name:
-            icon_name = "application-x-zerosize"  # Standard GNOME/Kylin empty icon fallback
+        self._setup_css(Gtk)
 
-        self.indicator = appindicator.Indicator.new(
-            "kylin-perf-monitor",
-            icon_name,
-            appindicator.IndicatorCategory.SYSTEM_SERVICES
+        # 1. Native Solid Dock Window (Zero composite overhead)
+        self.window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        self.window.set_name("kylin-dock-window")
+        self.window.set_type_hint(Gdk.WindowTypeHint.DOCK)
+        self.window.set_decorated(False)
+        self.window.set_keep_above(True)
+        self.window.set_skip_taskbar_hint(True)
+        self.window.set_skip_pager_hint(True)
+        self.window.set_accept_focus(False)
+        self.window.set_title("KylinTaskbarMonitor")
+
+        # 2. Label
+        self.label = Gtk.Label(label=" 初始化监控中... ")
+        self.label.set_name("kylin-dock-label")
+        self.window.add(self.label)
+
+        # 3. Mouse events for dragging & right-click
+        self.window.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK |
+            Gdk.EventMask.BUTTON_RELEASE_MASK |
+            Gdk.EventMask.POINTER_MOTION_MASK
         )
-        self.indicator.set_status(appindicator.IndicatorStatus.ACTIVE)
+        self.window.connect("button-press-event", self._on_button_press)
+        self.window.connect("motion-notify-event", self._on_motion_notify)
+        self.window.connect("button-release-event", self._on_button_release)
 
-        # Right-click context menu
-        menu = Gtk.Menu()
-        
-        # 1. Title / Header
-        item_title = Gtk.MenuItem(label="信创极轻量性能监控 v0.1.0")
-        item_title.set_sensitive(False)
-        menu.append(item_title)
-
-        menu.append(Gtk.SeparatorMenuItem())
-
-        # 2. Open Config
-        item_config = Gtk.MenuItem(label="打开配置文件")
-        item_config.connect("activate", self._open_config)
-        menu.append(item_config)
-
-        # 3. About
-        item_about = Gtk.MenuItem(label="关于")
-        item_about.connect("activate", self._show_about)
-        menu.append(item_about)
-
-        menu.append(Gtk.SeparatorMenuItem())
-
-        # 4. Quit
-        item_quit = Gtk.MenuItem(label="退出监控")
-        item_quit.connect("activate", lambda _: self.stop())
-        menu.append(item_quit)
-
-        menu.show_all()
-        self.indicator.set_menu(menu)
-
-        # Signal handlers for graceful exit on SIGINT/SIGTERM
+        # 4. Signal handlers
         try:
             GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.stop)
             GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.stop)
         except Exception:
             pass
 
+        self.window.show_all()
+        self._position_window(Gdk)
+
         # Initial tick
         self._tick()
 
-        # Schedule timer: use timeout_add_seconds for integer seconds to save wakeups
+        # Schedule timer: timeout_add_seconds saves CPU wakeups
         interval = self.config.interval
         if interval.is_integer() and interval >= 1.0:
             GLib.timeout_add_seconds(int(interval), self._tick)
@@ -223,7 +284,11 @@ class LinuxAppIndicator(BaseIndicator):
         if self._gtk:
             self._gtk.main_quit()
 
+# Backwards compatibility alias
+LinuxAppIndicator = LinuxDockIndicator
+
 def create_indicator(config: MonitorConfig, collector: MetricsCollector, force_mock: bool = False) -> BaseIndicator:
-    if force_mock or sys.platform == "darwin":
+    if force_mock or sys.platform == "darwin" or getattr(config, "mode", "dock") == "mock":
         return MockIndicator(config, collector)
-    return LinuxAppIndicator(config, collector)
+    return LinuxDockIndicator(config, collector)
+

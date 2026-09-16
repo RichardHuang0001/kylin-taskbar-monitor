@@ -17,7 +17,10 @@ class MonitorConfig:
     format: str = DEFAULT_FORMAT
     net_interface: str = "auto"
     icon: str = "utilities-system-monitor"
-    show_icon: bool = False
+    show_icon: bool = True
+    dock_x: int = -1
+    dock_y: int = -1
+    mode: str = "dock"
 
     @classmethod
     def load(cls, path: Union[str, Path] = DEFAULT_CONFIG_PATH, auto_create: bool = False) -> "MonitorConfig":
@@ -56,7 +59,10 @@ class MonitorConfig:
             "format": self.format,
             "net_interface": self.net_interface,
             "icon": self.icon,
-            "show_icon": self.show_icon
+            "show_icon": self.show_icon,
+            "dock_x": self.dock_x,
+            "dock_y": self.dock_y,
+            "mode": self.mode
         }
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)

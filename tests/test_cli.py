@@ -45,7 +45,10 @@ def test_cli_overrides_and_run():
             "--mock",
             "--interval", "4.0",
             "--format", "CPU: {cpu}%",
-            "--net-interface", "eth1"
+            "--net-interface", "eth1",
+            "--dock-x", "50",
+            "--dock-y", "60",
+            "--mode", "dock"
         ])
         assert ret == 0
         mock_ind.run.assert_called_once()
@@ -55,5 +58,9 @@ def test_cli_overrides_and_run():
         assert config.interval == 4.0
         assert config.format == "CPU: {cpu}%"
         assert config.net_interface == "eth1"
+        assert config.dock_x == 50
+        assert config.dock_y == 60
+        assert config.mode == "dock"
         assert collector.net_interface == "eth1"
         assert kwargs["force_mock"] is True
+

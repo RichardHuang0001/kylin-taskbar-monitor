@@ -13,7 +13,7 @@ def test_default_config():
 
 def test_config_save_and_load(tmp_path: Path):
     cfg_file = tmp_path / "test_config.json"
-    cfg = MonitorConfig(interval=3.5, format="CPU: {cpu}%", net_interface="eth0")
+    cfg = MonitorConfig(interval=3.5, format="CPU: {cpu}%", net_interface="eth0", dock_x=100, dock_y=200, mode="dock")
     cfg.save(cfg_file)
 
     assert cfg_file.exists()
@@ -21,6 +21,9 @@ def test_config_save_and_load(tmp_path: Path):
     assert loaded.interval == 3.5
     assert loaded.format == "CPU: {cpu}%"
     assert loaded.net_interface == "eth0"
+    assert loaded.dock_x == 100
+    assert loaded.dock_y == 200
+    assert loaded.mode == "dock"
 
 def test_config_auto_create(tmp_path: Path):
     cfg_file = tmp_path / "sub" / "auto_created.json"

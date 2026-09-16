@@ -50,6 +50,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="查看开机自启状态与配置路径"
     )
     parser.add_argument(
+        "--dock-x", type=int, default=None,
+        help="悬浮挂件 X 坐标 (-1 表示自动吸附右下角)"
+    )
+    parser.add_argument(
+        "--dock-y", type=int, default=None,
+        help="悬浮挂件 Y 坐标 (-1 表示自动吸附任务栏上方)"
+    )
+    parser.add_argument(
+        "--mode", type=str, choices=["dock", "mock"], default=None,
+        help="运行模式: dock (原生任务栏挂件), mock (终端文字预览)"
+    )
+    parser.add_argument(
         "--init-config", action="store_true",
         help="生成默认带注释配置文件"
     )
@@ -85,6 +97,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         config.format = args.format
     if args.net_interface is not None:
         config.net_interface = args.net_interface
+    if args.dock_x is not None:
+        config.dock_x = args.dock_x
+    if args.dock_y is not None:
+        config.dock_y = args.dock_y
+    if args.mode is not None:
+        config.mode = args.mode
 
     collector = MetricsCollector(net_interface=config.net_interface)
     indicator = create_indicator(config, collector, force_mock=args.mock)
