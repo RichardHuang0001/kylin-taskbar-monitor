@@ -5,7 +5,7 @@ import signal
 import sys
 import time
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, List, Any
 from .config import MonitorConfig, DEFAULT_CONFIG_PATH
 from .collector import MetricsCollector
 
@@ -81,6 +81,11 @@ class LinuxDockIndicator(BaseIndicator):
         self._drag_data = None
         self._gtk = None
         self._glib = None
+        self._menu_timer_id: Optional[int] = None
+        self._menu_open_time: float = 0.0
+        self._menu_core_items: List[Any] = []
+        self._menu_proc_items: List[Any] = []
+        self._current_menu: Optional[Any] = None
 
     def _init_gtk(self):
         try:
@@ -163,27 +168,101 @@ class LinuxDockIndicator(BaseIndicator):
         Gtk = self._gtk
         about = Gtk.AboutDialog()
         about.set_program_name("Kylin Taskbar Monitor")
-        about.set_version("0.2.4")
+        about.set_version("0.2.5")
         about.set_copyright("Copyright © 2026 Huang Wei")
         about.set_comments("信创极轻量任务栏性能监视器 (银河麒麟/统信UOS 高能效极速版)")
         about.connect("response", lambda d, r: d.destroy())
         about.show_all()
 
+    def _stop_menu_timer(self) -> None:
+        """Immediately stop dynamic menu refresh and release widget references."""
+        if self._menu_timer_id is not None and self._glib:
+            try:
+                self._glib.source_remove(self._menu_timer_id)
+            except Exception:
+                pass
+            self._menu_timer_id = None
+        self._current_menu = None
+        self._menu_core_items.clear()
+        self._menu_proc_items.clear()
+
+    def _update_menu_content(self) -> None:
+        """In-place update of MenuItem text with zero flicker and negligible overhead."""
+        try:
+            # 1. Update Per-Core stats in-place
+            cores = self.collector.get_per_cpu_percent()
+            if cores and self._menu_core_items:
+                chunks = [cores[i:i + 4] for i in range(0, len(cores), 4)]
+                for row_idx, chunk in enumerate(chunks):
+                    if row_idx < len(self._menu_core_items):
+                        parts = [f"C{row_idx * 4 + idx}:{val:>2.0f}%" for idx, val in enumerate(chunk)]
+                        self._menu_core_items[row_idx].set_label("  " + "  ".join(parts))
+
+            # 2. Update Top 5 processes in-place
+            top_procs = self.collector.get_top_processes(limit=5)
+            for idx in range(len(self._menu_proc_items)):
+                item = self._menu_proc_items[idx]
+                if top_procs and idx < len(top_procs):
+                    p = top_procs[idx]
+                    p_name = p['name']
+                    if len(p_name) > 18:
+                        p_name = p_name[:17] + "…"
+                    item.set_label(f"  • {p['cpu']:>5.1f}%  {p_name:<18} (PID {p['pid']})")
+                    item.show()
+                elif idx == 0 and not top_procs:
+                    item.set_label("  • 所有进程 CPU < 1% (系统空闲)")
+                    item.show()
+                else:
+                    item.hide()
+        except Exception:
+            pass
+
+    def _menu_refresh_tick(self) -> bool:
+        """3-second dynamic refresh callback with 30-second circuit breaker."""
+        # 1. Check if menu is still active and visible
+        if not self._current_menu or not self._current_menu.get_visible():
+            self._stop_menu_timer()
+            return False
+
+        # 2. Circuit breaker: maximum 30 seconds of dynamic refresh
+        now = time.time()
+        if now - self._menu_open_time >= 30.0:
+            self._stop_menu_timer()
+            return False
+
+        # 3. In-place content update
+        self._update_menu_content()
+        return True
+
+    def _on_menu_closed(self, menu):
+        """Teardown when menu is dismissed or closed by user."""
+        self._stop_menu_timer()
+        try:
+            menu.destroy()
+        except Exception:
+            pass
+
     def _show_context_menu(self, event):
         Gtk = self._gtk
+        # Terminate any previously dangling timer
+        self._stop_menu_timer()
+
         menu = Gtk.Menu()
+        self._current_menu = menu
 
-        # Connect selection-done signal for complete zero-leak cleanup
-        menu.connect("selection-done", lambda m: m.destroy())
+        # Connect exit events for complete zero-leak teardown
+        menu.connect("selection-done", self._on_menu_closed)
+        menu.connect("deactivate", self._on_menu_closed)
+        menu.connect("destroy", self._on_menu_closed)
 
-        item_title = Gtk.MenuItem(label="信创性能监控 v0.2.4")
+        item_title = Gtk.MenuItem(label="信创性能监控 v0.2.5")
         item_title.set_sensitive(False)
         item_title.get_style_context().add_class("monitor-title")
         menu.append(item_title)
 
         menu.append(Gtk.SeparatorMenuItem())
 
-        # 1. Per-Core CPU (on-demand)
+        # 1. Per-Core CPU (slots)
         cores = self.collector.get_per_cpu_percent()
         if cores:
             item_core_header = Gtk.MenuItem(label="【CPU 各核心负载】")
@@ -192,6 +271,7 @@ class LinuxDockIndicator(BaseIndicator):
             menu.append(item_core_header)
 
             chunks = [cores[i:i + 4] for i in range(0, len(cores), 4)]
+            self._menu_core_items = []
             for row_idx, chunk in enumerate(chunks):
                 parts = [f"C{row_idx * 4 + idx}:{val:>2.0f}%" for idx, val in enumerate(chunk)]
                 line_str = "  " + "  ".join(parts)
@@ -199,30 +279,26 @@ class LinuxDockIndicator(BaseIndicator):
                 item_core.set_sensitive(False)
                 item_core.get_style_context().add_class("monitor-mono")
                 menu.append(item_core)
+                self._menu_core_items.append(item_core)
 
             menu.append(Gtk.SeparatorMenuItem())
 
-        # 2. Top CPU-consuming processes (on-demand)
-        top_procs = self.collector.get_top_processes(limit=5)
-        item_proc_header = Gtk.MenuItem(label="【高负载进程 Top 5】")
+        # 2. Top CPU-consuming processes (5 fixed slots)
+        item_proc_header = Gtk.MenuItem(label="【高负载进程 Top 5 (3秒动态刷新)】")
         item_proc_header.set_sensitive(False)
         item_proc_header.get_style_context().add_class("monitor-section")
         menu.append(item_proc_header)
 
-        if top_procs:
-            for p in top_procs:
-                p_name = p['name']
-                if len(p_name) > 18:
-                    p_name = p_name[:17] + "…"
-                item_p = Gtk.MenuItem(label=f"  • {p['cpu']:>5.1f}%  {p_name:<18} (PID {p['pid']})")
-                item_p.set_sensitive(False)
-                item_p.get_style_context().add_class("monitor-proc")
-                menu.append(item_p)
-        else:
-            item_p = Gtk.MenuItem(label="  • 所有进程 CPU < 1% (系统空闲)")
+        self._menu_proc_items = []
+        for _ in range(5):
+            item_p = Gtk.MenuItem(label="")
             item_p.set_sensitive(False)
             item_p.get_style_context().add_class("monitor-proc")
             menu.append(item_p)
+            self._menu_proc_items.append(item_p)
+
+        # Initial populate
+        self._update_menu_content()
 
         menu.append(Gtk.SeparatorMenuItem())
 
@@ -252,6 +328,10 @@ class LinuxDockIndicator(BaseIndicator):
 
         menu.show_all()
         menu.popup_at_pointer(event)
+
+        # Start dynamic 3-second refresh timer with timestamp
+        self._menu_open_time = time.time()
+        self._menu_timer_id = self._glib.timeout_add_seconds(3, self._menu_refresh_tick)
 
     def _on_button_press(self, widget, event):
         if event.button == 1:  # Left click: start drag
@@ -376,6 +456,7 @@ class LinuxDockIndicator(BaseIndicator):
 
     def stop(self) -> None:
         self._is_running = False
+        self._stop_menu_timer()
         if self._gtk:
             self._gtk.main_quit()
 
