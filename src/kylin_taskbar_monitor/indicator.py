@@ -110,29 +110,29 @@ class LinuxDockIndicator(BaseIndicator):
         }
         menuitem.monitor-title:disabled label,
         menuitem.monitor-title:disabled {
-            color: #60a5fa !important;
-            font-weight: 700 !important;
-            font-size: 14px !important;
-            opacity: 1.0 !important;
+            color: #60a5fa;
+            font-weight: 700;
+            font-size: 14px;
+            opacity: 1.0;
         }
         menuitem.monitor-section:disabled label,
         menuitem.monitor-section:disabled {
-            color: #38bdf8 !important;
-            font-weight: 600 !important;
-            font-size: 13px !important;
-            opacity: 1.0 !important;
+            color: #38bdf8;
+            font-weight: 600;
+            font-size: 13px;
+            opacity: 1.0;
         }
         menuitem.monitor-mono:disabled label,
         menuitem.monitor-mono:disabled {
-            color: #ffffff !important;
-            font-family: monospace, "DejaVu Sans Mono", "Liberation Mono" !important;
-            font-size: 13px !important;
-            opacity: 1.0 !important;
+            color: #ffffff;
+            font-family: monospace, "DejaVu Sans Mono", "Liberation Mono";
+            font-size: 13px;
+            opacity: 1.0;
         }
         menuitem.monitor-item:disabled label,
         menuitem.monitor-item:disabled {
-            color: #f1f5f9 !important;
-            opacity: 1.0 !important;
+            color: #f1f5f9;
+            opacity: 1.0;
         }
         """
         provider = Gtk.CssProvider()
