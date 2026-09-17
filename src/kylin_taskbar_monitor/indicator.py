@@ -110,28 +110,29 @@ class LinuxDockIndicator(BaseIndicator):
         }
         menuitem.monitor-title:disabled label,
         menuitem.monitor-title:disabled {
-            color: #60a5fa;
+            color: #1d4ed8;
             font-weight: 700;
             font-size: 14px;
             opacity: 1.0;
         }
         menuitem.monitor-section:disabled label,
         menuitem.monitor-section:disabled {
-            color: #38bdf8;
+            color: #0369a1;
             font-weight: 600;
             font-size: 13px;
             opacity: 1.0;
         }
         menuitem.monitor-mono:disabled label,
         menuitem.monitor-mono:disabled {
-            color: #ffffff;
+            color: #0f172a;
             font-family: monospace, "DejaVu Sans Mono", "Liberation Mono";
             font-size: 13px;
+            font-weight: 500;
             opacity: 1.0;
         }
         menuitem.monitor-item:disabled label,
         menuitem.monitor-item:disabled {
-            color: #f1f5f9;
+            color: #1e293b;
             opacity: 1.0;
         }
         """
@@ -154,7 +155,7 @@ class LinuxDockIndicator(BaseIndicator):
         Gtk = self._gtk
         about = Gtk.AboutDialog()
         about.set_program_name("Kylin Taskbar Monitor")
-        about.set_version("0.2.2")
+        about.set_version("0.2.3")
         about.set_copyright("Copyright © 2026 Huang Wei")
         about.set_comments("信创极轻量任务栏性能监视器 (银河麒麟/统信UOS 高能效极速版)")
         about.connect("response", lambda d, r: d.destroy())
@@ -167,7 +168,7 @@ class LinuxDockIndicator(BaseIndicator):
         # Connect selection-done signal for complete zero-leak cleanup
         menu.connect("selection-done", lambda m: m.destroy())
 
-        item_title = Gtk.MenuItem(label="信创性能监控 v0.2.2")
+        item_title = Gtk.MenuItem(label="信创性能监控 v0.2.3")
         item_title.set_sensitive(False)
         item_title.get_style_context().add_class("monitor-title")
         menu.append(item_title)
