@@ -126,8 +126,16 @@ class LinuxDockIndicator(BaseIndicator):
         menuitem.monitor-mono:disabled {
             color: #0f172a;
             font-family: monospace, "DejaVu Sans Mono", "Liberation Mono";
-            font-size: 13px;
+            font-size: 14px;
             font-weight: 500;
+            opacity: 1.0;
+        }
+        menuitem.monitor-proc:disabled label,
+        menuitem.monitor-proc:disabled {
+            color: #0f172a;
+            font-family: monospace, "DejaVu Sans Mono", "Liberation Mono";
+            font-size: 16px;
+            font-weight: 600;
             opacity: 1.0;
         }
         menuitem.monitor-item:disabled label,
@@ -155,7 +163,7 @@ class LinuxDockIndicator(BaseIndicator):
         Gtk = self._gtk
         about = Gtk.AboutDialog()
         about.set_program_name("Kylin Taskbar Monitor")
-        about.set_version("0.2.3")
+        about.set_version("0.2.4")
         about.set_copyright("Copyright © 2026 Huang Wei")
         about.set_comments("信创极轻量任务栏性能监视器 (银河麒麟/统信UOS 高能效极速版)")
         about.connect("response", lambda d, r: d.destroy())
@@ -168,7 +176,7 @@ class LinuxDockIndicator(BaseIndicator):
         # Connect selection-done signal for complete zero-leak cleanup
         menu.connect("selection-done", lambda m: m.destroy())
 
-        item_title = Gtk.MenuItem(label="信创性能监控 v0.2.3")
+        item_title = Gtk.MenuItem(label="信创性能监控 v0.2.4")
         item_title.set_sensitive(False)
         item_title.get_style_context().add_class("monitor-title")
         menu.append(item_title)
@@ -208,12 +216,12 @@ class LinuxDockIndicator(BaseIndicator):
                     p_name = p_name[:17] + "…"
                 item_p = Gtk.MenuItem(label=f"  • {p['cpu']:>5.1f}%  {p_name:<18} (PID {p['pid']})")
                 item_p.set_sensitive(False)
-                item_p.get_style_context().add_class("monitor-mono")
+                item_p.get_style_context().add_class("monitor-proc")
                 menu.append(item_p)
         else:
             item_p = Gtk.MenuItem(label="  • 所有进程 CPU < 1% (系统空闲)")
             item_p.set_sensitive(False)
-            item_p.get_style_context().add_class("monitor-mono")
+            item_p.get_style_context().add_class("monitor-proc")
             menu.append(item_p)
 
         menu.append(Gtk.SeparatorMenuItem())
