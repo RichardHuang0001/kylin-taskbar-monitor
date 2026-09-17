@@ -60,3 +60,30 @@ def test_collector_specific_interface():
     collector = MetricsCollector(net_interface="non_existent_interface_xyz")
     metrics = collector.collect()
     assert "down_speed" in metrics
+
+def test_collector_on_demand_per_cpu():
+    collector = MetricsCollector()
+    cores = collector.get_per_cpu_percent()
+    assert isinstance(cores, list)
+    if cores:
+        assert len(cores) > 0
+        assert all(0.0 <= c <= 100.0 for c in cores)
+
+def test_collector_on_demand_top_processes():
+    collector = MetricsCollector()
+    top5 = collector.get_top_processes(limit=5)
+    assert isinstance(top5, list)
+    assert len(top5) <= 5
+    # Verify debounce caching
+    t0_procs = top5
+    t1_procs = collector.get_top_processes(limit=5)
+    assert t0_procs == t1_procs
+
+def test_collector_gpu_info():
+    collector = MetricsCollector()
+    gpu = collector.get_gpu_info()
+    assert isinstance(gpu, dict)
+    assert "name" in gpu
+    assert "vram" in gpu
+    assert "clock" in gpu
+    assert "available" in gpu

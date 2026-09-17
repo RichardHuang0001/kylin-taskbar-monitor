@@ -1,5 +1,6 @@
 """System metrics collector using psutil (zero-process-spawn /proc reader)."""
 
+import os
 import time
 from typing import Dict, Any, Tuple, List, Optional
 import psutil
@@ -26,6 +27,11 @@ class MetricsCollector:
         self._last_nic_scan: float = 0.0
         self.last_bytes_recv, self.last_bytes_sent = self._get_net_bytes()
         self.last_time = time.time()
+        
+        # Debounce cache for on-demand top processes & per-core stats
+        self._cached_top_procs: List[Dict[str, Any]] = []
+        self._last_top_proc_scan: float = 0.0
+        self._cached_gpu_info: Optional[Dict[str, Any]] = None
         
         # Prime the CPU percentage reader
         try:
@@ -139,3 +145,122 @@ class MetricsCollector:
             return c
         except Exception:
             return self._metrics_cache
+
+    def get_per_cpu_percent(self) -> List[float]:
+        """Fetch per-core CPU utilization (on-demand only, ~0.4ms overhead)."""
+        try:
+            return psutil.cpu_percent(percpu=True)
+        except Exception:
+            return []
+
+    def get_top_processes(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Fetch top CPU-consuming processes (on-demand only with 1.5s debounce).
+        
+        Uses lightweight direct /proc reader on Linux to avoid psutil Process object
+        allocation overhead and initial 0% sampling anomalies. Falls back to psutil
+        on non-Linux platforms.
+        """
+        now = time.time()
+        if self._cached_top_procs is not None and (now - self._last_top_proc_scan < 1.5):
+            return self._cached_top_procs[:limit]
+
+        # Linux direct /proc sampling with 80ms micro-window
+        if os.path.exists("/proc"):
+            try:
+                clk_tck = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+                
+                def _scan_proc_ticks() -> Dict[int, Tuple[str, int]]:
+                    stats: Dict[int, Tuple[str, int]] = {}
+                    for entry in os.scandir("/proc"):
+                        if entry.name.isdigit():
+                            try:
+                                with open(f"/proc/{entry.name}/stat", "r") as f:
+                                    content = f.read()
+                                rparen = content.rfind(")")
+                                if rparen != -1:
+                                    parts = content[rparen + 2:].split()
+                                    ticks = int(parts[11]) + int(parts[12])
+                                    name = content[content.find("(") + 1:rparen]
+                                    stats[int(entry.name)] = (name, ticks)
+                            except Exception:
+                                pass
+                    return stats
+
+                t0 = time.perf_counter()
+                s1 = _scan_proc_ticks()
+                time.sleep(0.08)
+                t1 = time.perf_counter()
+                s2 = _scan_proc_ticks()
+
+                dt = max(0.01, t1 - t0)
+                procs: List[Dict[str, Any]] = []
+                for pid, (name, ticks2) in s2.items():
+                    if pid in s1:
+                        dticks = ticks2 - s1[pid][1]
+                        if dticks > 0:
+                            cpu_pct = (dticks / clk_tck) / dt * 100.0
+                            procs.append({"pid": pid, "name": name, "cpu": round(cpu_pct, 1)})
+
+                procs.sort(key=lambda x: x["cpu"], reverse=True)
+                self._cached_top_procs = procs
+                self._last_top_proc_scan = now
+                return self._cached_top_procs[:limit]
+            except Exception:
+                pass
+
+        # Fallback to psutil for macOS / BSD / non-proc environments
+        procs_fallback: List[Dict[str, Any]] = []
+        try:
+            for p in psutil.process_iter(["pid", "name", "cpu_percent"]):
+                try:
+                    cpu = p.info.get("cpu_percent")
+                    if cpu is not None and cpu > 0.0:
+                        procs_fallback.append({
+                            "pid": p.info["pid"],
+                            "name": p.info.get("name") or f"PID {p.info['pid']}",
+                            "cpu": cpu,
+                        })
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            procs_fallback.sort(key=lambda x: x["cpu"], reverse=True)
+            self._cached_top_procs = procs_fallback
+            self._last_top_proc_scan = now
+        except Exception:
+            pass
+
+        return (self._cached_top_procs or [])[:limit]
+
+    def get_gpu_info(self) -> Dict[str, Any]:
+        """Fetch GPU hardware summary (cached on-demand, zero dynamic polling overhead)."""
+        if self._cached_gpu_info is not None:
+            return self._cached_gpu_info
+
+        info: Dict[str, Any] = {
+            "name": "未知显卡",
+            "vram": "未知",
+            "clock": "未知",
+            "available": False
+        }
+        # Detect Zhaoxin C-960 or generic Linux DRM
+        try:
+            gpu_info_path = "/sys/class/drm/card0/device/gpu-info"
+            if os.path.exists(gpu_info_path):
+                with open(gpu_info_path, "r", encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+                info["name"] = "兆芯 KX-6000 C-960"
+                for line in lines:
+                    if "VRAM total size:" in line:
+                        val_hex = line.split(":")[-1].strip()
+                        size_bytes = int(val_hex, 16)
+                        info["vram"] = f"{int(size_bytes / (1024 * 1024))} MB"
+                    elif "ECLK current:" in line:
+                        info["clock"] = line.split(":")[-1].strip()
+                info["available"] = True
+            elif os.path.exists("/sys/class/drm/card0"):
+                info["name"] = "Linux DRM Card0"
+                info["available"] = True
+        except Exception:
+            pass
+
+        self._cached_gpu_info = info
+        return info

@@ -128,7 +128,7 @@ class LinuxDockIndicator(BaseIndicator):
         Gtk = self._gtk
         about = Gtk.AboutDialog()
         about.set_program_name("Kylin Taskbar Monitor")
-        about.set_version("0.2.0")
+        about.set_version("0.2.1")
         about.set_copyright("Copyright © 2026 Huang Wei")
         about.set_comments("信创极轻量任务栏性能监视器 (银河麒麟/统信UOS 高能效极速版)")
         about.connect("response", lambda d, r: d.destroy())
@@ -138,11 +138,61 @@ class LinuxDockIndicator(BaseIndicator):
         Gtk = self._gtk
         menu = Gtk.Menu()
 
-        item_title = Gtk.MenuItem(label="信创性能监控 v0.2.0 (极低功耗)")
+        # Connect selection-done signal for complete zero-leak cleanup
+        menu.connect("selection-done", lambda m: m.destroy())
+
+        item_title = Gtk.MenuItem(label="信创性能监控 v0.2.1 (极低功耗)")
         item_title.set_sensitive(False)
         menu.append(item_title)
 
         menu.append(Gtk.SeparatorMenuItem())
+
+        # 1. Per-Core CPU (on-demand)
+        cores = self.collector.get_per_cpu_percent()
+        if cores:
+            item_core_header = Gtk.MenuItem(label="【CPU 各核心负载】")
+            item_core_header.set_sensitive(False)
+            menu.append(item_core_header)
+
+            chunks = [cores[i:i + 4] for i in range(0, len(cores), 4)]
+            for row_idx, chunk in enumerate(chunks):
+                parts = [f"C{row_idx * 4 + idx}:{val:>2.0f}%" for idx, val in enumerate(chunk)]
+                line_str = "  " + "  ".join(parts)
+                item_core = Gtk.MenuItem(label=line_str)
+                item_core.set_sensitive(False)
+                menu.append(item_core)
+
+            menu.append(Gtk.SeparatorMenuItem())
+
+        # 2. Top CPU-consuming processes (on-demand)
+        top_procs = self.collector.get_top_processes(limit=5)
+        item_proc_header = Gtk.MenuItem(label="【高负载进程 Top 5】")
+        item_proc_header.set_sensitive(False)
+        menu.append(item_proc_header)
+
+        if top_procs:
+            for p in top_procs:
+                p_name = p['name']
+                if len(p_name) > 18:
+                    p_name = p_name[:17] + "…"
+                item_p = Gtk.MenuItem(label=f"  • {p['cpu']:>5.1f}%  {p_name:<18} (PID {p['pid']})")
+                item_p.set_sensitive(False)
+                menu.append(item_p)
+        else:
+            item_p = Gtk.MenuItem(label="  • 所有进程 CPU < 1% (系统空闲)")
+            item_p.set_sensitive(False)
+            menu.append(item_p)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        # 3. GPU Info (on-demand / cached)
+        gpu = self.collector.get_gpu_info()
+        if gpu and gpu.get("available"):
+            gpu_text = f"【显卡】{gpu['name']} (显存: {gpu['vram']} | {gpu['clock']})"
+            item_gpu = Gtk.MenuItem(label=gpu_text)
+            item_gpu.set_sensitive(False)
+            menu.append(item_gpu)
+            menu.append(Gtk.SeparatorMenuItem())
 
         item_config = Gtk.MenuItem(label="打开配置文件")
         item_config.connect("activate", self._open_config)
