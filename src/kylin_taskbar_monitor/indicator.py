@@ -124,6 +124,7 @@ class LinuxDockIndicator(BaseIndicator):
         self._drag_data = None
         # 动态延迟导入的 GTK / GLib 模块句柄
         self._gtk = None
+        self._gdk = None
         self._glib = None
         
         # 菜单动态刷新定时器管理
@@ -503,40 +504,120 @@ class LinuxDockIndicator(BaseIndicator):
         self.update_label(label_text)
         return True
 
-    def _position_window(self, Gdk):
-        """计算并设置悬浮挂件在屏幕上的初始展示位置.
-        
-        定位逻辑：
-        - 若用户曾手动拖拽过并保存了坐标 (dock_x >= 0, dock_y >= 0)，恢复持久化坐标；
-        - 否则自动计算屏幕分辨率，吸附在主显示器右下角、任务栏上方 6px 处。
+    def _get_primary_geometry(self, Gdk):
+        """获取主显示器的几何区域 (x, y, 宽, 高).
+
+        Returns:
+            tuple: (x, y, width, height)，无法获取时回退 1920x1080。
         """
         display = Gdk.Display.get_default()
         monitor = display.get_primary_monitor() if display else None
         if monitor:
             geom = monitor.get_geometry()
-        else:
-            screen = Gdk.Screen.get_default()
-            p = screen.get_primary_monitor() if screen else 0
-            geom = screen.get_monitor_geometry(p if p >= 0 else 0) if screen else type("Geom", (), {"x": 0, "y": 0, "width": 1920, "height": 1080})()
-        
+            return geom.x, geom.y, geom.width, geom.height
+        screen = Gdk.Screen.get_default()
+        if screen:
+            p = screen.get_primary_monitor()
+            geom = screen.get_monitor_geometry(p if p >= 0 else 0)
+            return geom.x, geom.y, geom.width, geom.height
+        return 0, 0, 1920, 1080
+
+    def _position_is_visible(self, Gdk, x: int, y: int, w: int, h: int) -> bool:
+        """判断窗口放置在 (x, y) 处、尺寸为 (w, h) 时是否至少部分落在
+        当前任一已接入显示器的可视区域内。
+
+        用于防御陈旧坐标：例如曾在第二块显示器上拖拽保存过位置，
+        之后拔掉该显示器，旧坐标在新布局下已不可见。
+
+        Returns:
+            bool: 与任一显示器区域相交返回 True，否则 False。
+        """
+        display = Gdk.Display.get_default()
+        n = display.get_n_monitors() if display else 0
+        for i in range(max(n, 1)):
+            if display:
+                mon = display.get_monitor(i)
+                if mon is None:
+                    continue
+                geom = mon.get_geometry()
+            else:
+                screen = Gdk.Screen.get_default()
+                geom = screen.get_monitor_geometry(i) if screen else None
+                if geom is None:
+                    continue
+            gx, gy, gw, gh = geom.x, geom.y, geom.width, geom.height
+            # 矩形相交判定：窗口与该显示器的可视区域有重叠
+            if x < gx + gw and x + w > gx and y < gy + gh and y + h > gy:
+                return True
+        return False
+
+    def _position_window(self, Gdk):
+        """计算并设置悬浮挂件在屏幕上的初始展示位置.
+
+        定位逻辑：
+        - 若用户曾手动拖拽过并保存了坐标 (dock_x >= 0, dock_y >= 0)，
+          先校验该坐标在当前显示器布局下是否可见，可见则恢复持久化坐标；
+        - 坐标缺失或已不可见（如显示器被拔除）时，回退到智能默认位置
+          （主显示器右下角、任务栏上方 6px 处），并自动清除配置中的
+          脏坐标（写回 -1），避免污染后续启动。
+        """
         # 获取窗口首选尺寸大小
         _, natural_req = self.window.get_preferred_size()
         w = max(260, natural_req.width)
         h = max(24, natural_req.height)
 
+        saved = None
         if self.config.dock_x >= 0 and self.config.dock_y >= 0:
-            # 恢复用户拖拽记忆的坐标
-            self.window.move(self.config.dock_x, self.config.dock_y)
-        else:
-            # 智能默认值：停靠在右下角，避开 UKUI 任务栏高度（约 44px）
-            x = geom.x + geom.width - w - 16
-            y = geom.y + geom.height - 44 - h - 6
-            self.window.move(max(0, x), max(0, y))
+            saved = (self.config.dock_x, self.config.dock_y)
+        # 恢复用户拖拽记忆的坐标（仅当其在当前显示器布局下可见）
+        if saved and self._position_is_visible(Gdk, saved[0], saved[1], w, h):
+            self.window.move(saved[0], saved[1])
+            return
+
+        # 坐标缺失或已落在可视区外：回退智能默认值并清除脏坐标
+        if saved:
+            self.config.dock_x = -1
+            self.config.dock_y = -1
+            try:
+                self.config.save()
+            except Exception:
+                pass
+
+        gx, gy, gw, gh = self._get_primary_geometry(Gdk)
+        # 智能默认值：停靠在右下角，避开 UKUI 任务栏高度（约 44px）
+        x = gx + gw - w - 16
+        y = gy + gh - 44 - h - 6
+        self.window.move(max(gx, x), max(gy, y))
+
+    def _on_size_allocate(self, widget, allocation):
+        """窗口尺寸变化时的边界钳制回调.
+
+        标签文本变长会把窗口撑宽，导致右/下边缘超出虚拟屏幕被裁剪；
+        此回调在尺寸分配时将窗口拉回可视范围内，且不干扰正常拖拽。
+        """
+        if not self._gdk or not self.window:
+            return
+        try:
+            screen = self._gdk.Screen.get_default()
+            if not screen:
+                return
+            sw, sh = screen.get_width(), screen.get_height()
+            wx, wy = self.window.get_position()
+            nx, ny = wx, wy
+            if wx + allocation.width > sw:
+                nx = max(0, sw - allocation.width - 4)
+            if wy + allocation.height > sh:
+                ny = max(0, sh - allocation.height - 4)
+            if (nx, ny) != (wx, wy):
+                self.window.move(nx, ny)
+        except Exception:
+            pass
 
     def start(self) -> None:
         """初始化 GTK3 窗口组件、绑定系统事件并启动 GTK 主事件循环."""
         Gtk, Gdk, GLib = self._init_gtk()
         self._gtk = Gtk
+        self._gdk = Gdk
         self._glib = GLib
         self._is_running = True
 
@@ -568,6 +649,7 @@ class LinuxDockIndicator(BaseIndicator):
         self.window.connect("button-press-event", self._on_button_press)
         self.window.connect("motion-notify-event", self._on_motion_notify)
         self.window.connect("button-release-event", self._on_button_release)
+        self.window.connect("size-allocate", self._on_size_allocate)
 
         # 4. 监听 POSIX 系统终止信号 (SIGINT / SIGTERM)，确保进程终止时正常退出
         try:
