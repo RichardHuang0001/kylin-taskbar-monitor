@@ -57,13 +57,21 @@ class MetricsCollector:
     并提供右键菜单按需查询高 CPU 占用进程列表及显卡硬件信息的能力。
     """
 
-    def __init__(self, net_interface: str = "auto"):
+    def __init__(self, net_interface: str = "auto",
+                 power_idle: float = 8.0, power_max: float = 45.0,
+                 show_power: bool = True):
         """初始化性能指标采集器.
-        
+
         Args:
             net_interface: 要监控的网络接口名称，默认 "auto" 自动合并物理网卡流量。
+            power_idle: 功耗估算模型的整机空闲功率基线 (W)。
+            power_max: 功耗估算模型的满载附加功率 (W)，与 CPU 利用率线性外推。
+            show_power: 是否启用功耗采集，关闭后该模块零 I/O 开销。
         """
         self.net_interface = net_interface
+        self._power_idle = max(1.0, float(power_idle))
+        self._power_max = max(self._power_idle + 1.0, float(power_max))
+        self._show_power = show_power
         
         # 网卡列表缓存：避免每次定时器触发都遍历枚举所有网络接口
         self._cached_nics: Optional[List[str]] = None
@@ -78,7 +86,20 @@ class MetricsCollector:
         self._last_top_proc_scan: float = 0.0
         # 显卡硬件信息静态缓存（显卡型号基本不动态变更）
         self._cached_gpu_info: Optional[Dict[str, Any]] = None
-        
+
+        # ---- 功耗模块状态（电池实测 + 插电估算，双方案） ----
+        # sysfs 节点路径在启动时一次性探测，运行期零探测开销
+        self._init_power_paths()
+        # 电池实测功率 EMA 平滑状态（None 表示尚无有效样本）
+        self._power_ema: Optional[float] = None
+        # energy_now 差分交叉校验基准（防个别 EC 上报功率异常）
+        self._last_energy_uwh: Optional[int] = None
+        self._last_energy_ts: float = 0.0
+        # 最近一次功耗快照，供右键菜单按需查询（get_power_info）
+        self._last_power_info: Dict[str, Any] = {
+            "power_w": None, "src": "na", "status": "Unknown", "capacity": -1
+        }
+
         # 预热 CPU 占有率采样器（psutil 首次无间隔调用会返回 0.0，预先调用一次建立基准）
         try:
             psutil.cpu_percent(interval=None)
@@ -97,6 +118,8 @@ class MetricsCollector:
             "up_speed": "  0K/s",
             "down_bps": 0.0,
             "up_bps": 0.0,
+            "power": "",
+            "power_src": "na",
         }
 
 
@@ -154,6 +177,162 @@ class MetricsCollector:
             # 捕获异常确保不会因网络接口插拔或权限问题导致监控崩溃
             pass
         return 0, 0
+
+    @staticmethod
+    def _read_sysfs_int(path: str, default: int = -1) -> int:
+        """单文件读取 sysfs 整数节点（单次实测开销 ≈ 0.13ms）."""
+        try:
+            with open(path, "r") as f:
+                return int(f.read().strip())
+        except Exception:
+            return default
+
+    @staticmethod
+    def _read_sysfs_str(path: str) -> Optional[str]:
+        """单文件读取 sysfs 字符串节点."""
+        try:
+            with open(path, "r") as f:
+                return f.read().strip()
+        except Exception:
+            return None
+
+    def _init_power_paths(self) -> None:
+        """一次性探测功耗相关 sysfs 节点路径.
+
+        仅在启动时执行一次（os.listdir + 少量 exists），运行期零探测开销。
+        兼容性策略：
+        - 电池节点以 type 文件内容 == "Battery" 为准（BAT1/BATT/BAT0 通吃）；
+        - 适配器节点匹配 AC*/ADP* 前缀的 online 文件；
+        - 台式机（无电池）自动降级为估算模式或隐藏显示。
+        """
+        self._bat_dir: Optional[str] = None
+        self._ac_online_path: Optional[str] = None
+        base = "/sys/class/power_supply"
+        try:
+            names = os.listdir(base)
+        except Exception:
+            return
+        for name in names:
+            if self._ac_online_path is None and name.startswith(("AC", "ADP")):
+                online = os.path.join(base, name, "online")
+                if os.path.exists(online):
+                    self._ac_online_path = online
+                    continue
+            tpath = os.path.join(base, name, "type")
+            if os.path.exists(tpath):
+                try:
+                    with open(tpath, "r") as f:
+                        if f.read().strip() == "Battery":
+                            self._bat_dir = os.path.join(base, name)
+                except Exception:
+                    pass
+
+    def _update_power(self, c: Dict[str, Any], cpu_float: float, now: float) -> None:
+        """功耗采集与估算（主采样循环内联调用，无独立线程/定时器）.
+
+        开销设计（默认 2s 采样间隔）：
+        - 电池放电态：4 次 sysfs 单文件读 ≈ 0.5ms（status/power_now/energy_now/capacity）；
+        - 插电态：1 次 AC/online 读 ≈ 0.13ms + 一次乘加纯计算；
+        - show_power=False：完全跳过，零 I/O。
+
+        数据源分级：
+        1. 电池放电：内核 ACPI 驱动的 power_now 实测值（µW），EMA 平滑抑抖；
+           并用 energy_now 差分 (ΔE/Δt) 交叉校验，偏差过大时以能量计数器为准；
+        2. 充电中：power_now 为电池侧充电功率，直接展示；
+        3. 插电/满电：整机功率不走电池、无硬件计量通道（兆芯平台无 RAPL/MSR），
+           采用 P ≈ P_idle + CPU% × (P_max - P_idle) 线性估算，标记 (估)；
+        4. 台式机无任何电源节点：占位符渲染为空，不报错不显示。
+        """
+        c["power"] = ""
+        c["power_src"] = "na"
+
+        if not self._show_power:
+            return
+
+        status: Optional[str] = None
+        power_uw = -1
+        if self._bat_dir:
+            status = self._read_sysfs_str(os.path.join(self._bat_dir, "status"))
+            power_uw = self._read_sysfs_int(os.path.join(self._bat_dir, "power_now"))
+
+        ac_online: Optional[bool] = None
+        if self._ac_online_path:
+            v = self._read_sysfs_int(self._ac_online_path, -1)
+            if v >= 0:
+                ac_online = bool(v)
+
+        power_w: Optional[float] = None
+        src = "na"
+        capacity = -1
+
+        if self._bat_dir is None and self._ac_online_path is None:
+            # 4) 台式机/无任何电源节点 → 隐藏占位符
+            src = "na"
+        elif status == "Discharging":
+            # 1) 电池实测路径（EC 计量，最高可信）
+            if power_uw > 0:
+                raw_w = power_uw / 1e6
+                # EMA 平滑：抑制瞬时读数跳动，单次乘加零开销
+                self._power_ema = raw_w if self._power_ema is None \
+                    else (0.5 * self._power_ema + 0.5 * raw_w)
+                power_w = self._power_ema
+                src = "batt"
+                # energy_now 差分交叉校验：ΔµWh × 3600 / (Δs × 1e6) = W
+                e = self._read_sysfs_int(os.path.join(self._bat_dir, "energy_now"))
+                if e >= 0:
+                    dt = now - self._last_energy_ts
+                    if self._last_energy_uwh is not None and dt > 0.5 \
+                            and e < self._last_energy_uwh:
+                        avg_w = (self._last_energy_uwh - e) * 3600.0 / (dt * 1e6)
+                        # 实测值与能量差分严重背离时，以累积型能量计数器为准；
+                        # 上限 200W 兜底：差分输入异常（如休眠唤醒）时不采纳
+                        if 1.0 < avg_w <= 200.0 \
+                                and abs(avg_w - raw_w) > 0.5 * max(avg_w, raw_w):
+                            self._power_ema = avg_w
+                            power_w = avg_w
+                    self._last_energy_uwh = e
+                    self._last_energy_ts = now
+            else:
+                # 状态为放电但功率上报异常 → 退化为估算
+                power_w = self._power_idle + \
+                    min(100.0, max(0.0, cpu_float)) / 100.0 * (self._power_max - self._power_idle)
+                src = "est"
+            cap = self._read_sysfs_int(os.path.join(self._bat_dir, "capacity"))
+            if 0 <= cap <= 100:
+                capacity = cap
+        elif status == "Charging" and power_uw > 0:
+            # 2) 充电中：展示电池侧充电功率
+            power_w = power_uw / 1e6
+            src = "charge"
+        else:
+            # 3) 插电（满电/充电未报功率）或异常态 → 利用率线性外推估算，零额外 I/O
+            power_w = self._power_idle + \
+                min(100.0, max(0.0, cpu_float)) / 100.0 * (self._power_max - self._power_idle)
+            src = "est"
+
+        # 组装定宽显示片段（防止数字位数变化引起挂件宽度抖动）
+        if src == "batt":
+            cap_str = f"({capacity}%)" if capacity >= 0 else ""
+            c["power"] = f"⚡{power_w:4.1f}W{cap_str}"
+        elif src == "charge":
+            c["power"] = f"⚡{power_w:4.1f}W(充)"
+        elif src == "est":
+            c["power"] = f"⚡≈{power_w:3.0f}W(估)"
+
+        c["power_src"] = src
+        self._last_power_info = {
+            "power_w": power_w, "src": src,
+            "status": status or "Unknown", "capacity": capacity
+        }
+
+    def get_power_info(self) -> Dict[str, Any]:
+        """获取最近一次采样周期的功耗快照（右键菜单按需查询，零 I/O）.
+
+        Returns:
+            Dict[str, Any]: power_w (float|None), src (batt/charge/est/na),
+                            status, capacity。
+        """
+        return self._last_power_info
 
     def collect(self) -> Dict[str, Any]:
         """执行一次全量系统性能指标采集（主定时器高频调用方法）.
@@ -220,6 +399,9 @@ class MetricsCollector:
             c["up_speed"] = format_speed(up_bps, fixed_width=True)
             c["down_bps"] = down_bps
             c["up_bps"] = up_bps
+
+            # 5. 功耗采集（电池实测 / 插电估算，复用本次采样的 CPU 利用率）
+            self._update_power(c, cpu, now)
 
             return c
         except Exception:

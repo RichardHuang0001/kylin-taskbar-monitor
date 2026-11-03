@@ -134,7 +134,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         config.mode = args.mode
 
     # 7. 组装性能采集器与界面指示器实例
-    collector = MetricsCollector(net_interface=config.net_interface)
+    collector = MetricsCollector(
+        net_interface=config.net_interface,
+        power_idle=config.power_estimate_idle,
+        power_max=config.power_estimate_max,
+        show_power=config.show_power,
+    )
     indicator = create_indicator(config, collector, force_mock=args.mock)
     
     # 8. 启动主循环，优雅捕获 Ctrl+C 退出信号

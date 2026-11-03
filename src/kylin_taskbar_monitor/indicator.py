@@ -133,6 +133,7 @@ class LinuxDockIndicator(BaseIndicator):
         # 预先分配的菜单项固定槽位（实现原地 set_label 局部更新）
         self._menu_core_items: List[Any] = []
         self._menu_proc_items: List[Any] = []
+        self._menu_power_item: Optional[Any] = None
         # 当前弹出的菜单对象弱引用
         self._current_menu: Optional[Any] = None
 
@@ -231,7 +232,7 @@ class LinuxDockIndicator(BaseIndicator):
         Gtk = self._gtk
         about = Gtk.AboutDialog()
         about.set_program_name("Kylin Taskbar Monitor")
-        about.set_version("0.2.5")
+        about.set_version("0.3.0")
         about.set_copyright("Copyright © 2026 Huang Wei")
         about.set_comments("信创极轻量任务栏性能监视器 (银河麒麟/统信UOS 高能效极速版)")
         # 监听对话框关闭按钮事件，销毁窗口
@@ -252,6 +253,27 @@ class LinuxDockIndicator(BaseIndicator):
         self._current_menu = None
         self._menu_core_items.clear()
         self._menu_proc_items.clear()
+        self._menu_power_item = None
+
+    def _power_menu_text(self) -> str:
+        """根据最近一次功耗快照组装菜单文本（零 I/O，复用采样缓存）."""
+        try:
+            p = self.collector.get_power_info()
+        except Exception:
+            return "  【功耗】数据不可用"
+        w = p.get("power_w")
+        if w is None:
+            return "  【功耗】当前设备无功率计量通道"
+        src = p.get("src")
+        if src == "batt":
+            cap = p.get("capacity", -1)
+            cap_str = f"，剩余 {cap}%" if cap >= 0 else ""
+            return f"  【功耗】{w:.1f}W (电池实测{cap_str})"
+        if src == "charge":
+            return f"  【功耗】{w:.1f}W (电池充电中)"
+        if src == "est":
+            return f"  【功耗】≈{w:.0f}W (插电估算)"
+        return "  【功耗】当前设备无功率计量通道"
 
     def _update_menu_content(self) -> None:
         """原地更新菜单项文字标签（零闪烁、极小 CPU 开销）.
@@ -259,6 +281,10 @@ class LinuxDockIndicator(BaseIndicator):
         优化机制：不销毁、不重建任何 MenuItem 控件，直接调用 `set_label` 局部刷新内容。
         """
         try:
+            # 0. 原地更新功耗信息行
+            if self._menu_power_item is not None:
+                self._menu_power_item.set_label(self._power_menu_text())
+
             # 1. 原地更新 CPU 各核心负载 (每行展示 4 个核心)
             cores = self.collector.get_per_cpu_percent()
             if cores and self._menu_core_items:
@@ -359,7 +385,7 @@ class LinuxDockIndicator(BaseIndicator):
         menu.connect("destroy", self._on_menu_closed)
 
         # 顶部标题栏（置灰不可点击）
-        item_title = Gtk.MenuItem(label="信创性能监控 v0.2.5")
+        item_title = Gtk.MenuItem(label="信创性能监控 v0.3.0")
         item_title.set_sensitive(False)
         item_title.get_style_context().add_class("monitor-title")
         menu.append(item_title)
@@ -415,6 +441,15 @@ class LinuxDockIndicator(BaseIndicator):
             item_gpu.set_sensitive(False)
             item_gpu.get_style_context().add_class("monitor-section")
             menu.append(item_gpu)
+            menu.append(Gtk.SeparatorMenuItem())
+
+        # 4. 功耗信息 (复用主循环采样缓存，零 I/O，随菜单 3 秒动态刷新)
+        if getattr(self.config, "show_power", True):
+            item_power = Gtk.MenuItem(label=self._power_menu_text())
+            item_power.set_sensitive(False)
+            item_power.get_style_context().add_class("monitor-section")
+            menu.append(item_power)
+            self._menu_power_item = item_power
             menu.append(Gtk.SeparatorMenuItem())
 
         # 打开配置文件条目

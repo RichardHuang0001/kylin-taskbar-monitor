@@ -18,7 +18,7 @@ DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
 
 # 默认状态栏展示模板：包含 CPU 占用率、内存使用量、下行/上行网络速率
 # 采用定宽格式化语法（如 {cpu:>2}%），防止数值位数变动导致界面文字横向抖动
-DEFAULT_FORMAT = "CPU {cpu:>2}% | 内存 {mem_used_g:4.1f}G | ↓{down_speed} | ↑{up_speed}"
+DEFAULT_FORMAT = "CPU {cpu:>2}% | 内存 {mem_used_g:4.1f}G | ↓{down_speed} | ↑{up_speed} | {power}"
 
 
 @dataclass
@@ -43,6 +43,9 @@ class MonitorConfig:
     dock_x: int = -1
     dock_y: int = -1
     mode: str = "dock"
+    show_power: bool = True
+    power_estimate_idle: float = 8.0
+    power_estimate_max: float = 45.0
 
     @classmethod
     def load(cls, path: Union[str, Path] = DEFAULT_CONFIG_PATH, auto_create: bool = False) -> "MonitorConfig":
@@ -102,7 +105,7 @@ class MonitorConfig:
         # 构建带注释与占位符帮助信息的 JSON 载荷
         payload = {
             "_comment": "信创极轻量任务栏性能监视器配置文件",
-            "_fields_help": "可用占位符: {cpu}, {cpu_float}, {mem_used_g}, {mem_total_g}, {mem_percent}, {down_speed}, {up_speed}",
+            "_fields_help": "可用占位符: {cpu}, {cpu_float}, {mem_used_g}, {mem_total_g}, {mem_percent}, {down_speed}, {up_speed}, {power}(功耗片段: ⚡12.3W(85%)/⚡15.2W(充)/⚡≈18W(估)), {power_src}(功耗来源 batt/charge/est/na)",
             "interval": self.interval,
             "format": self.format,
             "net_interface": self.net_interface,
@@ -110,7 +113,10 @@ class MonitorConfig:
             "show_icon": self.show_icon,
             "dock_x": self.dock_x,
             "dock_y": self.dock_y,
-            "mode": self.mode
+            "mode": self.mode,
+            "show_power": self.show_power,
+            "power_estimate_idle": self.power_estimate_idle,
+            "power_estimate_max": self.power_estimate_max
         }
         # 以 UTF-8 编码美化输出 JSON 文件
         with open(config_path, "w", encoding="utf-8") as f:
