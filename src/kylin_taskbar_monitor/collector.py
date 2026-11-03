@@ -311,13 +311,14 @@ class MetricsCollector:
             src = "est"
 
         # 组装定宽显示片段（防止数字位数变化引起挂件宽度抖动）
+        # 符号约定：＝ 实测值（EC 计量）；≈ 利用率外推估算值
         if src == "batt":
             cap_str = f"({capacity}%)" if capacity >= 0 else ""
-            c["power"] = f"⚡{power_w:4.1f}W{cap_str}"
+            c["power"] = f"⚡＝{power_w:4.1f}W{cap_str}"
         elif src == "charge":
-            c["power"] = f"⚡{power_w:4.1f}W(充)"
+            c["power"] = f"⚡＝{power_w:4.1f}W(充)"
         elif src == "est":
-            c["power"] = f"⚡≈{power_w:3.0f}W(估)"
+            c["power"] = f"⚡≈{power_w:3.0f}W"
 
         c["power_src"] = src
         self._last_power_info = {

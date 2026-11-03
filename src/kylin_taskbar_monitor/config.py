@@ -105,7 +105,7 @@ class MonitorConfig:
         # 构建带注释与占位符帮助信息的 JSON 载荷
         payload = {
             "_comment": "信创极轻量任务栏性能监视器配置文件",
-            "_fields_help": "可用占位符: {cpu}, {cpu_float}, {mem_used_g}, {mem_total_g}, {mem_percent}, {down_speed}, {up_speed}, {power}(功耗片段: ⚡12.3W(85%)/⚡15.2W(充)/⚡≈18W(估)), {power_src}(功耗来源 batt/charge/est/na)",
+            "_fields_help": "可用占位符: {cpu}, {cpu_float}, {mem_used_g}, {mem_total_g}, {mem_percent}, {down_speed}, {up_speed}, {power}(功耗片段: ⚡＝12.3W(85%)实测/⚡＝15.2W(充)/⚡≈18W估算), {power_src}(功耗来源 batt/charge/est/na)",
             "interval": self.interval,
             "format": self.format,
             "net_interface": self.net_interface,
